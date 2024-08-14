@@ -1,0 +1,33 @@
+{
+  "name": "back-end",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "nodemon --inspect index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thongprotk/WebNodeJS.git"
+  },
+  "author": "BTT",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/thongprotk/WebNodeJS/issues"
+  },
+  "homepage": "https://github.com/thongprotk/WebNodeJS#readme",
+  "description": "",
+  "dependencies": {
+    "eiows": "^7.1.0",
+    "express": "^4.19.2",
+    "mongoose": "^8.5.2",
+    "nodemon": "^3.1.4",
+    "socket.io": "^4.7.5",
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "cors": "^2.8.5",
+    "http": "^0.0.1-security",
+    "socket-controllers": "^0.3.1"
+  }
+}
