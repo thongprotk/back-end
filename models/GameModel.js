@@ -5,8 +5,8 @@ const gameSchema = new Schema({
   room: String,
   player: String,
   opponent: String,
-  player1Choice: String,
-  player2Choice: String,
+  playerChoice: String,
+  opponentChoice: String,
   result: String,
   createdAt: {
     type: Date,

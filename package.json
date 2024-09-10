@@ -8,14 +8,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thongprotk/WebNodeJS.git"
+    "url": "git+https://github.com/thongprotk/game-socket.git"
   },
   "author": "BTT",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/thongprotk/WebNodeJS/issues"
+    "url": "https://github.com/thongprotk/game-socket.git/issues"
   },
-  "homepage": "https://github.com/thongprotk/WebNodeJS#readme",
+  "homepage": "https://github.com/thongprotk/game-socket.git#readme",
   "description": "",
   "dependencies": {
     "eiows": "^7.1.0",

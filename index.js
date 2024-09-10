@@ -1,104 +1,128 @@
 const express = require("express");
 const { Server } = require("socket.io");
 const http = require("http");
-const db = require("./db.js");
-const cors = require("cors");
+// const db = require("./db.js");
 const Game = require("./models/GameModel.js");
 const Room = require("./models/RoomModel.js");
 const app = express();
-
-app.use(cors());
-
+const cors = require("cors");
 const server = http.createServer(app);
 const io = new Server(server, {
-  serveClient: false,
   cors: {
-    origin: "http://localhost:3000",
-    methods: ["GET", "POST"],
+    origin: "*", // Hoặc bạn có thể chỉ định cụ thể miền nào được phép
   },
 });
 
-db.connectToDB();
+// db.connectToDB();
+
+let waitingPlayer = null;
+let playerChoices = {};
 
 io.on("connection", (socket) => {
-  console.log("A user connected:${socket.id}");
-  socket.on("JoinRoom", async (roomName) => {
-    let Room = await Room.findOne({ roomName });
-    if (!roomName) {
-      Room = new Room({ roomName });
-      await Room.save();
-    }
-    socket.join(roomName);
-    socket.roomName = roomName;
+  var _id = socket.id;
+  io.to(_id).emit("connection", "connected");
 
-    if (Room.players.length < 2) {
-      Room.players.push(socket.id);
-      await Room.save();
-    }
-    if (Room.players.length === 2) {
-      io.to(roomName).emit("Game Start");
-    }
-  });
+  socket.on("playerReady", () => {
+    if (waitingPlayer) {
+      const firstPlayerId = waitingPlayer.id;
+      const secondPlayerId = _id;
+      // gửi id về client:
+      socket.emit('firstPlayerId',{id: firstPlayerId});
+      socket.emit('secondPlayerId',{idVs: secondPlayerId});
+ 
+      console.log(`Matching ${firstPlayerId} and ${secondPlayerId}`);
 
-  socket.on("sendChoice", async (choice) => {
-    const roomName = socket.roomName;
-    const room = await Room.findOne({ roomName });
+      io.to(firstPlayerId).emit("startGame", {
+        id: firstPlayerId,
+        idVs: secondPlayerId,
+      });
+      io.to(secondPlayerId).emit("startGame", {
+        id: secondPlayerId,
+        idVs: firstPlayerId,
+      });
 
-    if (room && room.players.includes(socket.id)) {
-      const opponentSocketId = room.players.find((id) => id !== socket.id);
-      if (opponentSocketId) {
-        const game = await Game.findOne({ room: roomName, result: null });
-
-        if (game) {
-          if (game.player1 === socket.id) {
-            game.player1Choice = choice;
-          } else {
-            game.player2Choice = choice;
-          }
-
-          if (game.player1Choice && game.player2Choice) {
-            game.result = determineWinnerChoice(
-              game.player1Choice,
-              game.player2Choice
-            );
-            await game.save();
-            io.to(roomName).emit("gameResult", { game });
-          } else {
-            await game.save();
-          }
-        } else {
-          const newGame = new Game({
-            room: roomName,
-            player1: socket.id,
-            player1Choice: choice,
-          });
-          await newGame.save();
-        }
-
-        socket.broadcast.to(opponentSocketId).emit("receiveChoice", choice);
-      }
+      waitingPlayer = null;
+    } else {
+      waitingPlayer = socket;
     }
   });
-
   socket.on("disconnect", () => {
-    console.log("A user disconnected");
+    console.log("A player disconnected:", socket.id);
+    if (waitingPlayer && waitingPlayer.id === socket.id) {
+      waitingPlayer = null;
+    }
+  });
+  socket.on("choices", (data) => {
+    const { playerChoice } = data; // choice = data.choice
+    const playerId = _id;
+    playerChoices[playerId] = playerChoice;
+
+    if (playerChoices[firstPlayerId] && playerChoices[secondPlayerId]) {
+      const result = determineWinnerChoice(
+        playerChoices[firstPlayerId],
+        playerChoices[secondPlayerId]
+      );
+      optionChoice(
+        determineWinnerChoice(
+          playerChoices[firstPlayerId],
+          playerChoices[secondPlayerId]
+        )
+      );
+
+      io.to(firstPlayerId).emit("result", {
+        optionChoice,
+        result,
+        manSelected: playerChoices[firstPlayerId],
+        opponentChoice: playerChoices[secondPlayerId],
+      });
+      io.to(secondPlayerId).emit("result", {
+        result,
+        optionChoice,
+        manSelected: playerChoices[secondPlayerId],
+        opponentChoice: playerChoices[firstPlayerId],
+      });
+
+      playerChoices = {};
+    }
   });
 });
 
-const determineWinnerChoice = (player1Choice, player2Choice) => {
-  if (player1Choice === player2Choice) {
+const FIGHT_OPTION = {
+  KEO: 1,
+  BUA: 2,
+  BAO: 3,
+};
+const FIGHT_LIST = [
+  {
+    value: FIGHT_OPTION.KEO,
+    label: "keo",
+  },
+  {
+    value: FIGHT_OPTION.BUA,
+    label: "bua",
+  },
+  {
+    value: FIGHT_OPTION.BAO,
+    label: "bao",
+  },
+];
+
+function determineWinnerChoice(playerChoice, opponentSelected) {
+  if (playerChoice === opponentSelected) {
     return "draw";
   } else if (
-    (player1Choice === "punch" && player2Choice === "drag") ||
-    (player1Choice === "leaves" && player2Choice === "punch") ||
-    (player1Choice === "drag" && player2Choice === "leaves")
+    (playerChoice === FIGHT_OPTION.KEO &&
+      opponentSelected === FIGHT_OPTION.BAO) ||
+    (playerChoice === FIGHT_OPTION.BUA &&
+      opponentSelected === FIGHT_OPTION.KEO) ||
+    (playerChoice === FIGHT_OPTION.BAO && opponentSelected === FIGHT_OPTION.BUA)
   ) {
-    return "player1 wins";
+    return "win";
   } else {
-    return "player2 wins";
+    return "lose";
   }
-};
+}
 
-server.listen(3001, () => {
+server.listen(3000, async () => {
   console.log("run");
 });
