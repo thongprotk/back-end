@@ -1,128 +1,134 @@
 const express = require("express");
 const { Server } = require("socket.io");
-const http = require("http");
+// import { createServer } from "http";
 // const db = require("./db.js");
-const Game = require("./models/GameModel.js");
-const Room = require("./models/RoomModel.js");
+// const Game = require("./models/GameModel.js");
+// const Room = require("./models/RoomModel.js");
 const app = express();
 const cors = require("cors");
-const server = http.createServer(app);
-const io = new Server(server, {
+// const server = createServer();
+const io = new Server(3000, {
   cors: {
-    origin: "*", // Hoặc bạn có thể chỉ định cụ thể miền nào được phép
+    origin: "*",
   },
 });
 
 // db.connectToDB();
+app.use(cors());
 
-let waitingPlayer = null;
-let playerChoices = {};
+let room = {};
+let roomID = "121";
 
 io.on("connection", (socket) => {
-  var _id = socket.id;
+  const _id = socket.id;
   io.to(_id).emit("connection", "connected");
+  console.log(`user connected: ${_id}`);
 
-  socket.on("playerReady", () => {
-    if (waitingPlayer) {
-      const firstPlayerId = waitingPlayer.id;
-      const secondPlayerId = _id;
-      // gửi id về client:
-      socket.emit('firstPlayerId',{id: firstPlayerId});
-      socket.emit('secondPlayerId',{idVs: secondPlayerId});
- 
-      console.log(`Matching ${firstPlayerId} and ${secondPlayerId}`);
+  socket.on("createRoom", (roomID) => {
+    room[roomID] = { firstPlayerChoice: null, firstPlayerResult: null };
 
-      io.to(firstPlayerId).emit("startGame", {
-        id: firstPlayerId,
-        idVs: secondPlayerId,
+    socket.join(room[roomID]);
+
+    console.log(`room ${roomID} created by ${_id}`);
+
+    socket.to(roomID).emit("playersConnected", { roomID: roomID });
+  });
+  socket.on("joinRoom", (roomID) => {
+    // const roomSize = io.sockets.adapter.rooms.get(roomID).size;
+    // if (roomSize >= 2) {
+    //   return socket.emit("roomFull");
+    // }
+    // if (io.sockets.adapter.r√ooms.has(roomID)) {
+    socket.join(roomID);
+    room[roomID] = { secondPlayerChoice: null };
+
+    socket.to(roomID).emit("playersConnected", { roomID });
+    console.log(`room id: ${roomID}`);
+    return socket.emit("playersConnected", { roomID });
+    // }
+  });
+
+  socket.on("p1Choice", (data) => {
+    if (data) {
+      const choice = data.rpsChoice;
+      const roomID = data.roomID;
+
+      room[roomID].firstPlayerChoice = choice;
+      socket.to(roomID).emit("p1Choice", {
+        rpsValue: choice,
+        score: room[roomID].firstPlayerResult,
       });
-      io.to(secondPlayerId).emit("startGame", {
-        id: secondPlayerId,
-        idVs: firstPlayerId,
-      });
-
-      waitingPlayer = null;
-    } else {
-      waitingPlayer = socket;
+      if (room[roomID].secondPlayerChoice) {
+        return determineWinnerChoice(roomID);
+      }
     }
+  });
+  socket.on("p2Choice", (data) => {
+    if (data) {
+      const choice = data.rpsChoice;
+      const roomID = data.roomID;
+
+      room[roomID].secondPlayerChoice = choice;
+      socket.to(roomID).emit("p2Choice", {
+        rpsValue: choice,
+        score: room[roomID].secondPlayerResult,
+      });
+      if (room[roomID].firstPlayerChoice) {
+        return determineWinnerChoice(roomID);
+      }
+    }
+  });
+
+  socket.on("playerClicked", (data) => {
+    const roomID = data.roomID;
+    room[roomID].firstPlayerChoice = null;
+    return socket.to(roomID).emit("playAgain");
+  });
+  socket.on("exitGame", (data) => {
+    const roomID = data.roomID;
+    if (data.player) {
+      socket.to(roomID).emit("play1Left");
+    } else {
+      socket.to(roomID).emit("play2Left");
+    }
+    return socket.leave(roomID);
   });
   socket.on("disconnect", () => {
-    console.log("A player disconnected:", socket.id);
-    if (waitingPlayer && waitingPlayer.id === socket.id) {
-      waitingPlayer = null;
-    }
-  });
-  socket.on("choices", (data) => {
-    const { playerChoice } = data; // choice = data.choice
-    const playerId = _id;
-    playerChoices[playerId] = playerChoice;
-
-    if (playerChoices[firstPlayerId] && playerChoices[secondPlayerId]) {
-      const result = determineWinnerChoice(
-        playerChoices[firstPlayerId],
-        playerChoices[secondPlayerId]
-      );
-      optionChoice(
-        determineWinnerChoice(
-          playerChoices[firstPlayerId],
-          playerChoices[secondPlayerId]
-        )
-      );
-
-      io.to(firstPlayerId).emit("result", {
-        optionChoice,
-        result,
-        manSelected: playerChoices[firstPlayerId],
-        opponentChoice: playerChoices[secondPlayerId],
-      });
-      io.to(secondPlayerId).emit("result", {
-        result,
-        optionChoice,
-        manSelected: playerChoices[secondPlayerId],
-        opponentChoice: playerChoices[firstPlayerId],
-      });
-
-      playerChoices = {};
-    }
+    console.log("client disconnect");
   });
 });
-
 const FIGHT_OPTION = {
   KEO: 1,
   BUA: 2,
   BAO: 3,
 };
-const FIGHT_LIST = [
-  {
-    value: FIGHT_OPTION.KEO,
-    label: "keo",
-  },
-  {
-    value: FIGHT_OPTION.BUA,
-    label: "bua",
-  },
-  {
-    value: FIGHT_OPTION.BAO,
-    label: "bao",
-  },
-];
 
-function determineWinnerChoice(playerChoice, opponentSelected) {
-  if (playerChoice === opponentSelected) {
-    return "draw";
-  } else if (
-    (playerChoice === FIGHT_OPTION.KEO &&
-      opponentSelected === FIGHT_OPTION.BAO) ||
-    (playerChoice === FIGHT_OPTION.BUA &&
-      opponentSelected === FIGHT_OPTION.KEO) ||
-    (playerChoice === FIGHT_OPTION.BAO && opponentSelected === FIGHT_OPTION.BUA)
-  ) {
-    return "win";
-  } else {
-    return "lose";
+const determineWinnerChoice = (roomID) => {
+  let winner;
+  if (room[roomID].firstPlayerChoice == room[roomID].secondPlayerChoice) {
+    winner = "draw";
+  } else if (room[roomID].firstPlayerChoice == FIGHT_OPTION.BUA) {
+    if (room[roomID].secondPlayerChoice == FIGHT_OPTION.BAO) {
+      winner = " p2";
+    } else {
+      winner = "p1";
+    }
+  } else if (room[roomID].firstPlayerChoice == FIGHT_OPTION.KEO) {
+    if (room[roomID].secondPlayerChoice == FIGHT_OPTION.BUA) {
+      winner = "p2";
+    } else {
+      winner = "p1";
+    }
+  } else if (room[roomID].firstPlayerChoice == FIGHT_OPTION.BAO) {
+    if (room[roomID].secondPlayerChoice == FIGHT_OPTION.KEO) {
+      winner = "p2";
+    } else {
+      winner = "p1";
+    }
   }
-}
+  return io.sockets.to(roomID).emit("winner", winner);
+};
 
-server.listen(3000, async () => {
-  console.log("run");
-});
+// server.listen(3000, async () => {
+//   console.log("run");
+// });
