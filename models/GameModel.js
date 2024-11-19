@@ -4,8 +4,6 @@ const Schema = mongoose.Schema;
 const gameSchema = new Schema({
   room: String,
   player: String,
-  playerChoice: String,
-  opponentChoice: String,
   result: String,
   createdAt: {
     type: Date,

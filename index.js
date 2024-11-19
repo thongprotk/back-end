@@ -136,62 +136,66 @@ io.on("connection", (socket) => {
 
   socket.on("playerClicked", (data) => {
     const roomID = data.roomID;
-    room[roomID].firstPlayerChoice = null;
-    room[roomID].secondPlayerChoice = null;
     socket.emit("playAgain", {
       firstPlayerChoice: (room[roomID].firstPlayerChoice = null),
       secondPlayerChoice: (room[roomID].secondPlayerChoice = null),
     });
   });
-  socket.emit("displayChoice", {});
 
   socket.on("exitGame", (data) => {
     const roomID = data.roomID;
     socket.leave(roomID);
     if (room[roomID]) {
       // Xoá người chơi khỏi phòng
-      room[roomID].players = room[roomID].players.filter(
-        (player) => player !== socket.id
-      );
+      if (room[roomID].player1 === socket.id) {
+        room[roomID].player1 = null;
+      } else if (room[roomID].player2 === socket.id) {
+        room[roomID].player2 = null;
+      }
 
-      console.log(`Player ${socket.id} left room ${roomID}`);
-
-      // Nếu phòng không còn người chơi, xoá phòng
-      if (room[roomID].players.length === 0) {
+      // If both players are null, delete the room
+      if (!room[roomID].player1 && !room[roomID].player2) {
         delete room[roomID];
-        console.log(`Room ${roomID} has been deleted because it's empty`);
       }
 
       // Thông báo cho client rằng đã rời khỏi phòng
-      socket.emit("leftRoom", roomID);
+      io.emit("room-list", Object.keys(room));
     }
   });
   socket.on("resultGame", async (data) => {
     console.log("kkk", data);
     try {
-      const { roomID, player, opponentSelected, manSelected, result } = data;
+      const { roomID, player, result } = data;
       const game = new Game({
         roomID: roomID,
         player: player,
-        opponentSelected: opponentSelected,
-        manSelected: manSelected,
         result: result,
       });
       await game.save();
       const winners = await Game.find({ result: "win" });
-      socket.emit("winList", winners);
+      console.log("k", winners);
+      io.emit("winList", winners);
     } catch (err) {
       console.log("loi,.....");
     }
   });
 
   socket.on("disconnect", () => {
-    console.log("client disconnect");
+    console.log(`User disconnected: ${_id}`);
+
+    // Clean up room data when a player disconnects
     for (const roomID in room) {
-      if (room[roomID].length === 0) {
-        delete room[roomID];
-        io.sockets.emit("room-list", Object.keys(room)); // Cập nhật danh sách phòng
+      if (room[roomID].player1 === _id) {
+        room[roomID].player1 = null;
+      } else if (room[roomID].player2 === _id) {
+        room[roomID].player2 = null;
       }
+
+      if (!room[roomID].player1 && !room[roomID].player2) {
+        delete room[roomID];
+      }
+
+      io.emit("room-list", Object.keys(room));
     }
   });
 });
