@@ -10,6 +10,8 @@ const cors = require("cors");
 const io = new Server(3000, {
   cors: {
     origin: "*",
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type"],
   },
 });
 
@@ -171,9 +173,10 @@ io.on("connection", (socket) => {
         player: player,
         result: result,
       });
+      console.log("111", game);
       await game.save();
       const winners = await Game.find({ result: "win" });
-      console.log("k", winners);
+      // console.log("k", winners);
       io.emit("winList", winners);
     } catch (err) {
       console.log("loi,.....");
