@@ -46,11 +46,13 @@ io.on("connection", (socket) => {
       socket
         .to(room[roomID].player1)
         .emit("playersConnected", { roomID, player1: true });
+    } else {
+      socket.emit("err", { message: "Phòng đã tồn tại" });
+      return;
     }
   });
   socket.on("joinRoom", (roomID) => {
     socket.join(roomID);
-    console.log(room[roomID]);
     if (!room[roomID]) {
       room[roomID] = { player1: socket.id, player2: null };
 
@@ -67,8 +69,11 @@ io.on("connection", (socket) => {
       socket
         .to(room[roomID].player1)
         .emit("playersConnected", { roomID, player1: true });
-    }
-    if (room[roomID] && !!room[roomID].player1 && !!room[roomID].player2) {
+    } else if (
+      room[roomID] &&
+      !!room[roomID].player1 &&
+      !!room[roomID].player2
+    ) {
       socket.emit("gameReady", {
         roomID,
         player1: room[roomID].player1,
@@ -78,6 +83,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("p1Choice", (data) => {
+    if (!data || !data.roomID || !room[data.roomID]) return;
     console.log("p1 choice");
     if (data) {
       const choice = data.rpsChoice;
@@ -158,6 +164,12 @@ io.on("connection", (socket) => {
       // If both players are null, delete the room
       if (!room[roomID].player1 && !room[roomID].player2) {
         delete room[roomID];
+      } else {
+        io.to(roomID).emit("player-left", {
+          roomID,
+          remainingPlayer: room[roomID],
+          message: "Người chơi đã rời đi. Đợi người chơi khác tham gia!",
+        });
       }
 
       // Thông báo cho client rằng đã rời khỏi phòng
@@ -173,11 +185,10 @@ io.on("connection", (socket) => {
         player: player,
         result: result,
       });
-      console.log("111", game);
       await game.save();
       const winners = await Game.find({ result: "win" });
-      // console.log("k", winners);
       io.emit("winList", winners);
+      console.log(winners);
     } catch (err) {
       console.log("loi,.....");
     }
@@ -209,6 +220,7 @@ const FIGHT_OPTION = {
 };
 
 const determineWinnerChoice = (roomID) => {
+  if (!room[roomID]) return;
   let winner;
   if (room[roomID].firstPlayerChoice == room[roomID].secondPlayerChoice) {
     winner = "draw";
@@ -232,16 +244,14 @@ const determineWinnerChoice = (roomID) => {
     }
   }
   if (roomID) {
-    io.sockets.emit("winner", {
-      roomID,
-      winner,
-    });
-    console.log(
-      "Emitted winner to room:",
-      room[roomID],
-      "with winner:",
-      winner
-    );
+    io.sockets.emit("winner", { roomID, winner });
+    // console.log(
+    //   "Emitted winner to room:",
+    //   room[roomID],
+    //   "with winner:",
+    //   winner
+    // );
+    // Lưu kết quả vào database
   }
 };
 
