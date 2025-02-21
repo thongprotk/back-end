@@ -66,15 +66,18 @@ io.on("connection", (socket) => {
       socket.emit("playersConnected", { roomID, player1: false });
 
       // Gửi thông báo cho cả player1 rằng player2 đã tham gia
-      socket
-        .to(room[roomID].player1)
-        .emit("playersConnected", { roomID, player1: true });
-    } else if (
-      room[roomID] &&
-      !!room[roomID].player1 &&
-      !!room[roomID].player2
-    ) {
-      socket.emit("gameReady", {
+      io.to(room[roomID].player1).emit("playersConnected", {
+        roomID,
+        player1: true,
+      });
+
+      // 2 nguoi thi bat dau
+      io.to(room[roomID].player1).emit("gameReady", {
+        roomID,
+        player1: room[roomID].player1,
+        player2: room[roomID].player2,
+      });
+      io.to(room[roomID].player2).emit("gameReady", {
         roomID,
         player1: room[roomID].player1,
         player2: room[roomID].player2,
@@ -150,9 +153,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("exitGame", (data) => {
-    const roomID = data.roomID;
-    socket.leave(roomID);
+  socket.on("exitGame", ({ roomID }) => {
     if (room[roomID]) {
       // Xoá người chơi khỏi phòng
       if (room[roomID].player1 === socket.id) {
@@ -160,6 +161,7 @@ io.on("connection", (socket) => {
       } else if (room[roomID].player2 === socket.id) {
         room[roomID].player2 = null;
       }
+      console.log(`Người chơi ${socket.id} rời phòng ${roomID}`);
 
       // If both players are null, delete the room
       if (!room[roomID].player1 && !room[roomID].player2) {
@@ -168,12 +170,12 @@ io.on("connection", (socket) => {
         io.to(roomID).emit("player-left", {
           roomID,
           remainingPlayer: room[roomID],
-          message: "Người chơi đã rời đi. Đợi người chơi khác tham gia!",
+          message: `Người chơi ${socket.id} đã rời đi. Đợi người chơi khác tham gia!`,
         });
       }
 
       // Thông báo cho client rằng đã rời khỏi phòng
-      io.emit("room-list", Object.keys(room));
+      io.emit("room-list", Object.keys(room || {}));
     }
   });
   socket.on("resultGame", async (data) => {
@@ -188,7 +190,6 @@ io.on("connection", (socket) => {
       await game.save();
       const winners = await Game.find({ result: "win" });
       io.emit("winList", winners);
-      console.log(winners);
     } catch (err) {
       console.log("loi,.....");
     }
