@@ -5,6 +5,6 @@ module.exports = {
   },
   session: {
     cookieKey: "thenbuitrungthongguess",
-    jwtRefreshSecret: process.env.JWT_REFRESH_SECRET,
+    jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || "refresh-secret",
   },
 };
