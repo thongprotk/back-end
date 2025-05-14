@@ -55,10 +55,10 @@ const setupSocket = (io) => {
       await GameController.saveGameResult(roomID, player, result, io, socket);
     });
 
-    // socket.on("disconnect", () => {
-    //   RoomController.cleanupRoomsOnDisconnect(_id, io);
-    //   console.log(`User disconnected: ${_id}`);
-    // });
+    socket.on("disconnect", () => {
+      RoomController.cleanupRoomsOnDisconnect(_id, io);
+      console.log(`User disconnected: ${_id}`);
+    });
   });
 };
 

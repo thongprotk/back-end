@@ -65,31 +65,31 @@ const exitRoom = (socket, roomID, io) => {
   // Thông báo cho client rằng đã rời khỏi phòng
   io.emit("room-list", Object.keys(rooms || {}));
 };
-// const cleanupRoomsOnDisconnect = (socketID, io) => {
-//   for (const roomID in rooms) {
-//     if (rooms[roomID].player1 === socketID) {
-//       rooms[roomID].player1 = null;
-//       io.to(roomID).emit("player-left", {
-//         roomID,
-//         remainingPlayer: rooms[roomID].player2,
-//         message: `Người chơi đã rời đi. Đợi người chơi khác tham gia!`,
-//       });
-//     } else if (rooms[roomID].player2 === socketID) {
-//       rooms[roomID].player2 = null;
-//       io.to(roomID).emit("player-left", {
-//         roomID,
-//         remainingPlayer: rooms[roomID].player1,
-//         message: `Người chơi đã rời đi. Đợi người chơi khác tham gia!`,
-//       });
-//     }
+const cleanupRoomsOnDisconnect = (socketID, io) => {
+  for (const roomID in rooms) {
+    if (rooms[roomID].player1 === socketID) {
+      rooms[roomID].player1 = null;
+      io.to(roomID).emit("player-left", {
+        roomID,
+        remainingPlayer: rooms[roomID].player2,
+        message: `Người chơi đã rời đi. Đợi người chơi khác tham gia!`,
+      });
+    } else if (rooms[roomID].player2 === socketID) {
+      rooms[roomID].player2 = null;
+      io.to(roomID).emit("player-left", {
+        roomID,
+        remainingPlayer: rooms[roomID].player1,
+        message: `Người chơi đã rời đi. Đợi người chơi khác tham gia!`,
+      });
+    }
 
-//     // Xóa phòng nếu không còn ai
-//     if (!rooms[roomID].player1 && !rooms[roomID].player2) {
-//       delete rooms[roomID];
-//       io.emit("room-list", Object.keys(rooms));
-//     }
-//   }
-// };
+    // Xóa phòng nếu không còn ai
+    if (!rooms[roomID].player1 && !rooms[roomID].player2) {
+      delete rooms[roomID];
+      io.emit("room-list", Object.keys(rooms));
+    }
+  }
+};
 
 const getRoomList = () => Object.keys(rooms);
 const getRoomData = () => rooms;
