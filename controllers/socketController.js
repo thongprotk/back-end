@@ -57,7 +57,6 @@ const setupSocket = (io) => {
 
     socket.on("disconnect", () => {
       RoomController.cleanupRoomsOnDisconnect(_id, io);
-      console.log(`User disconnected: ${_id}`);
     });
   });
 };

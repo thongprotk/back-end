@@ -98,7 +98,7 @@ module.exports = {
   createRoom,
   joinRoom,
   exitRoom,
-  // cleanupRoomsOnDisconnect,
+  cleanupRoomsOnDisconnect,
   getRoomList,
   getRoomData,
 };
