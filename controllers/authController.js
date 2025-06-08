@@ -2,7 +2,7 @@ const User = require("../models/UserModel");
 const bcrypt = require("bcrypt");
 const keys = require("../config/keys");
 const jwt = require("jsonwebtoken");
-
+const axios = require("axios");
 const AuthController = {
   async register(req, res) {
     try {
@@ -112,34 +112,110 @@ const AuthController = {
     res.json(req.user);
   },
 
-  google(req, res) {
-    if (!req.user) {
-      return res.status(401).json({ message: "Authentication failed" });
+  async google(req, res) {
+    try {
+      const { code, redirectUri } = req.query;
+
+      // Nếu không có code, tạo và trả về Google OAuth URL
+      if (!code) {
+        const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+          `client_id=${keys.google.clientID}&` +
+          `redirect_uri=${encodeURIComponent(redirectUri || 'http://localhost:3000/auth')}&` +
+          `response_type=code&` +
+          `scope=profile email&` +
+          `access_type=offline&` +
+          `prompt=consent`;
+
+        return res.status(200).json({
+          _url: googleAuthUrl
+        });
+      }
+
+      // Nếu có code, xử lý để lấy access token
+      const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
+        client_id: keys.google.clientID,
+        client_secret: keys.google.clientSecret,
+        code: code,
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri || 'http://localhost:3000/auth'
+      });
+
+      const googleAccessToken = tokenResponse.data.access_token;
+
+      // Bước 2: Lấy thông tin user từ Google
+      const userResponse = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: {
+          Authorization: `Bearer ${googleAccessToken}`
+        }
+      });
+
+      const googleUser = userResponse.data;
+
+      // Bước 3: Tìm hoặc tạo user trong database
+      let user = await User.findOne({ email: googleUser.email });
+
+      if (!user) {
+        // Tạo user mới
+        user = new User({
+          username: googleUser.name,
+          email: googleUser.email,
+          googleId: googleUser.id,
+          avatar: googleUser.picture,
+          isVerified: true
+        });
+        await user.save();
+      } else {
+        // Cập nhật thông tin Google nếu user đã tồn tại
+        user.googleId = googleUser.id;
+        user.avatar = googleUser.picture;
+        await user.save();
+      }
+
+      // Bước 4: Tạo JWT access token của hệ thống
+      const accessToken = jwt.sign(
+        { id: user._id, email: user.email, username: user.username },
+        keys.session.cookieKey,
+        { expiresIn: "15m" }
+      );
+
+      const refreshToken = jwt.sign(
+        { id: user._id },
+        keys.session.jwtRefreshSecret,
+        { expiresIn: "7d" }
+      );
+
+      // Set refresh token cookie
+      res.cookie("refresh_token", refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: "Lax",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+
+      // Trả về theo format giống client code ví dụ
+      return res.status(200).json({
+        data: {
+          access_token: accessToken
+        }
+      });
+
+    } catch (error) {
+      console.error('Google OAuth Error:', error);
+      console.error('Error response:', error.response?.data);
+      console.error('Error status:', error.response?.status);
+
+      return res.status(500).json({
+        message: "Google authentication failed",
+        error: error.response?.data || error.message,
+        details: {
+          status: error.response?.status,
+          data: error.response?.data
+        }
+      });
     }
-
-    const user = req.user;
-    const accessToken = jwt.sign(
-      { id: user._id, email: user.email, username: user.username },
-      keys.session.cookieKey,
-      { expiresIn: "15m" }
-    );
-
-    const refreshToken = jwt.sign(
-      { id: user._id },
-      keys.session.jwtRefreshSecret,
-      { expiresIn: "7d" }
-    );
-
-    res.cookie("refresh_token", refreshToken, {
-      httpOnly: true,
-      secure: false,
-      sameSite: "Lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
-
-    return res.json({ access_token: accessToken, message: "Login with Google successful" });
-  },
+  }
 };
+
 
 module.exports = AuthController;
 

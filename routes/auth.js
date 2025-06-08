@@ -16,25 +16,7 @@ router.post("/api/logout", AuthController.logout);
 router.get("/api/profile", AuthController.getProfile);
 
 // Trình duyệt gọi route này để chuyển đến Google
-router.get(
-  "/google",
-  passport.authenticate("google", {
-    scope: ["profile", "email"],
-  })
-);
+router.get("/google", AuthController.google);
 
-// Google redirect về đây sau khi xác thực
-router.get(
-  "/google/redirect",
-  passport.authenticate("google", {
-    failureRedirect: "/api/login-fail",
-    session: true,
-  }),
-  AuthController.google
-);
 
-// Route lỗi khi login fail (local hoặc google)
-router.get("/api/login-fail", (req, res) => {
-  res.status(401).json({ error: "Login failed" });
-});
 module.exports = router;
