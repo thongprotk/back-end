@@ -142,7 +142,6 @@ const AuthController = {
 
       const googleAccessToken = tokenResponse.data.access_token;
 
-      // Bước 2: Lấy thông tin user từ Google
       const userResponse = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
         headers: {
           Authorization: `Bearer ${googleAccessToken}`
@@ -151,7 +150,6 @@ const AuthController = {
 
       const googleUser = userResponse.data;
 
-      // Bước 3: Tìm hoặc tạo user trong database
       let user = await User.findOne({ email: googleUser.email });
 
       if (!user) {
@@ -171,7 +169,6 @@ const AuthController = {
         await user.save();
       }
 
-      // Bước 4: Tạo JWT access token của hệ thống
       const accessToken = jwt.sign(
         { id: user._id, email: user.email, username: user.username },
         keys.session.cookieKey,
