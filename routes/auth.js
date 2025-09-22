@@ -16,7 +16,7 @@ router.post("/api/logout", AuthController.logout);
 router.get("/api/profile", AuthController.getProfile);
 
 // Trình duyệt gọi route này để chuyển đến Google
-router.get("/google", AuthController.google);
+router.get("/api/google", AuthController.google);
 
 
 module.exports = router;
