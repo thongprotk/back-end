@@ -4,9 +4,11 @@ let rooms = new Map();
 const { determineWinner: serviceWinner } = require("../services/detemineWinner");
 
 const createRoomState = () => ({
-  players: new Map(), // socketId -> {readyStatus: boolean, choice: null}
+  players: new Map(), // socketId -> {readyStatus: boolean, choice: null, playerNumber: 1|2|null}
   activePlayers: [], // Array of socketIds currently in game
+  playerSlots: [null, null], // [player1SocketId, player2SocketId] - maintain positions
   waitingQueue: [], // Queue of players waiting to play
+  reservedSlots: new Map(), // socketId -> { timeoutId, reservedUntil }
   gameState: {
     inProgress: false,
     round: 0,
@@ -74,11 +76,13 @@ const emitRoomStatus = (io, roomID) => {
     maxPlayers: room.settings.maxPlayers,
     queueLength: room.waitingQueue.length,
     gameInProgress: room.gameState.inProgress,
+    reserved: room.reservedSlots.size > 0, // Thêm flag để client biết có slot reserved
     players: Array.from(room.players.entries()).map(([id, data]) => ({
       id,
       ready: data.readyStatus,
       isActive: room.activePlayers.includes(id),
-      inQueue: room.waitingQueue.includes(id)
+      inQueue: room.waitingQueue.includes(id),
+      playerNumber: data.playerNumber || null // Include playerNumber from backend
     }))
   };
 
@@ -103,9 +107,11 @@ const createRoom = (socket, roomID, io) => {
       newRoom.players.set(socket.id, {
         readyStatus: false,
         choice: null,
-        joinedAt: Date.now()
+        joinedAt: Date.now(),
+        playerNumber: 1
       });
       newRoom.activePlayers.push(socket.id);
+      newRoom.playerSlots[0] = socket.id;
 
       rooms.set(rid, newRoom);
 
@@ -138,8 +144,29 @@ const joinRoom = (socket, roomID, io) => {
     socket.join(rid);
 
     if (!rooms.has(rid)) {
-      // Create room if doesn't exist
-      createRoom(socket, rid, io);
+      // Create new room directly here instead of calling createRoom
+      const newRoom = createRoomState();
+
+      // Add joiner as first active player
+      newRoom.players.set(socket.id, {
+        readyStatus: false,
+        choice: null,
+        joinedAt: Date.now(),
+        playerNumber: 1
+      });
+      newRoom.activePlayers.push(socket.id);
+      newRoom.playerSlots[0] = socket.id;
+
+      rooms.set(rid, newRoom);
+
+      socket.emit("playerJoined", {
+        roomID: rid,
+        position: 'active',
+        playerNumber: 1
+      });
+
+      emitRoomStatus(io, rid);
+      io.emit("room-list", getActiveRooms());
       return;
     }
 
@@ -156,67 +183,220 @@ const joinRoom = (socket, roomID, io) => {
 };
 
 const joinExistingRoom = (socket, roomID, io) => {
-  const room = rooms.get(roomID);
-  updateLastActivity(roomID);
+  try {
+    const room = rooms.get(roomID);
+    updateLastActivity(roomID);
 
-  // Check if player already in room
-  if (room.players.has(socket.id)) {
-    // Player reconnecting
-    const playerData = room.players.get(socket.id);
-    socket.emit("playerReconnected", {
-      roomID,
-      position: getPlayerPosition(room, socket.id)
-    });
-    emitRoomStatus(io, roomID);
-    return;
-  }
+    console.log(`[DEBUG] joinExistingRoom - socketId: ${socket.id}, roomID: ${roomID}`);
+    console.log(`[DEBUG] Room state - players:`, Array.from(room.players.keys()));
+    console.log(`[DEBUG] Room state - activePlayers:`, room.activePlayers);
+    console.log(`[DEBUG] Room state - playerSlots:`, room.playerSlots);
+    console.log(`[DEBUG] Room state - waitingQueue:`, room.waitingQueue);
+    console.log(`[DEBUG] Room state - reservedSlots:`, Array.from(room.reservedSlots.keys()));
 
-  // Determine where to place the new player
-  if (room.activePlayers.length < room.settings.maxPlayers && !room.gameState.inProgress) {
-    // Add as active player
-    room.players.set(socket.id, {
-      readyStatus: false,
-      choice: null,
-      joinedAt: Date.now()
-    });
-    room.activePlayers.push(socket.id);
+    // Check if player already in room
+    if (room.players.has(socket.id)) {
+      console.log(`[DEBUG] Player ${socket.id} already in room - reconnecting`);
+      // Player reconnecting - clear any reserved slot for this player
+      if (room.reservedSlots.has(socket.id)) {
+        const { timeoutId } = room.reservedSlots.get(socket.id);
+        clearTimeout(timeoutId);
+        room.reservedSlots.delete(socket.id);
+      }
 
-    socket.emit("playerJoined", {
-      roomID,
-      position: 'active',
-      playerNumber: room.activePlayers.length
-    });
-
-    // Check if we can start the game
-    if (room.activePlayers.length === room.settings.maxPlayers) {
-      emitToActivePlayers(io, room, roomID, "gameReady", {
-        players: room.activePlayers
+      const playerData = room.players.get(socket.id);
+      socket.emit("playerReconnected", {
+        roomID,
+        position: getPlayerPosition(room, socket.id)
       });
+      emitRoomStatus(io, roomID);
+      return;
     }
 
-  } else {
-    // Add to waiting queue
-    room.players.set(socket.id, {
-      readyStatus: false,
-      choice: null,
-      joinedAt: Date.now()
-    });
-    room.waitingQueue.push(socket.id);
+    // Determine where to place the new player
+    console.log(`[DEBUG] Determining player placement - activePlayers: ${room.activePlayers.length}/${room.settings.maxPlayers}, gameInProgress: ${room.gameState.inProgress}`);
 
-    socket.emit("playerJoined", {
-      roomID,
-      position: 'queue',
-      queuePosition: room.waitingQueue.length
+    if (room.activePlayers.length < room.settings.maxPlayers && !room.gameState.inProgress) {
+      console.log(`[DEBUG] Path: Adding as active player`);
+
+      // RACE CONDITION FIX: Double-check after adding player to prevent overshooting maxPlayers
+      if (room.activePlayers.length >= room.settings.maxPlayers) {
+        console.log(`[DEBUG] Room became full during processing - adding to queue instead`);
+        // Room became full while we were processing, add to queue
+        room.players.set(socket.id, {
+          readyStatus: false,
+          choice: null,
+          joinedAt: Date.now()
+        });
+        room.waitingQueue.push(socket.id);
+
+        socket.emit("playerJoined", {
+          roomID,
+          position: 'queue',
+          queuePosition: room.waitingQueue.length
+        });
+        console.log(`[DEBUG] Successfully added ${socket.id} to queue at position ${room.waitingQueue.length}`);
+      } else {
+        // Check for expired reserved slots and clean them up
+        const now = Date.now();
+        let hasValidReservation = false;
+
+        for (const [reservedSocketId, reservation] of room.reservedSlots.entries()) {
+          if (now > reservation.reservedUntil) {
+            console.log(`[DEBUG] Cleaning expired reserved slot for ${reservedSocketId}`);
+            clearTimeout(reservation.timeoutId);
+            room.reservedSlots.delete(reservedSocketId);
+          } else {
+            hasValidReservation = true;
+          }
+        }
+
+        // Only block if there are still valid reservations
+        if (hasValidReservation) {
+          console.log(`[DEBUG] SLOT_RESERVED detected - valid reservations count: ${room.reservedSlots.size}`);
+          console.log(`[DEBUG] Reserved slots details:`, Array.from(room.reservedSlots.entries()));
+          socket.emit("err", {
+            message: "Slot đang được giữ, vui lòng chờ giây lát",
+            code: "SLOT_RESERVED",
+            roomID
+          });
+          return;
+        }
+
+        // Add as active player
+        console.log(`[DEBUG] Successfully adding ${socket.id} as active player`);
+
+        // Find available player slot (1 or 2)
+        let playerNumber = 1;
+        if (room.playerSlots[0] === null) {
+          playerNumber = 1;
+          room.playerSlots[0] = socket.id;
+        } else if (room.playerSlots[1] === null) {
+          playerNumber = 2;
+          room.playerSlots[1] = socket.id;
+        }
+
+        room.players.set(socket.id, {
+          readyStatus: false,
+          choice: null,
+          joinedAt: Date.now(),
+          playerNumber: playerNumber
+        });
+        room.activePlayers.push(socket.id);
+
+        socket.emit("playerJoined", {
+          roomID,
+          position: 'active',
+          playerNumber: playerNumber
+        });
+
+        // Check if we can start the game
+        if (room.activePlayers.length === room.settings.maxPlayers) {
+          emitToActivePlayers(io, room, roomID, "gameReady", {
+            players: room.activePlayers
+          });
+        }
+      }
+
+    } else {
+      // Add to waiting queue
+      console.log(`[DEBUG] Path: Adding to queue - activePlayers: ${room.activePlayers.length}/${room.settings.maxPlayers}, gameInProgress: ${room.gameState.inProgress}`);
+      room.players.set(socket.id, {
+        readyStatus: false,
+        choice: null,
+        joinedAt: Date.now()
+      });
+      room.waitingQueue.push(socket.id);
+
+      socket.emit("playerJoined", {
+        roomID,
+        position: 'queue',
+        queuePosition: room.waitingQueue.length
+      });
+      console.log(`[DEBUG] Successfully added ${socket.id} to queue at position ${room.waitingQueue.length}`);
+    }
+
+    console.log(`[DEBUG] Final room state - players: ${Array.from(room.players.keys())}, activePlayers: ${room.activePlayers}, waitingQueue: ${room.waitingQueue}`);
+    console.log(`[DEBUG] Player details:`, Array.from(room.players.entries()).map(([id, data]) => ({ id, playerNumber: data.playerNumber, ready: data.readyStatus })));
+    emitRoomStatus(io, roomID);
+
+    // Auto-ready logic: If room has played games before and existing player was ready, set them ready again
+    if (room.activePlayers.length >= 2 && !room.gameState.inProgress && room.gameState.round > 0) {
+      console.log(`[DEBUG] Room has game history (round ${room.gameState.round}), applying auto-ready logic`);
+
+      // Find existing player (not the one who just joined)
+      const existingPlayerId = room.activePlayers.find(id => id !== socket.id);
+      if (existingPlayerId) {
+        const existingPlayer = room.players.get(existingPlayerId);
+        if (existingPlayer) {
+          console.log(`[DEBUG] Setting existing player ${existingPlayerId.substr(-4)} to ready=true (game history)`);
+          existingPlayer.readyStatus = true;
+        }
+      }
+
+      // Re-emit room status with updated ready states
+      emitRoomStatus(io, roomID);
+    }
+
+    // Check if all active players are ready after new join (including auto-ready)
+    if (room.activePlayers.length >= 2 && !room.gameState.inProgress) {
+      const allReady = room.activePlayers.every(playerId => {
+        const pData = room.players.get(playerId);
+        return pData && pData.readyStatus;
+      });
+
+      console.log(`[DEBUG] After new join - allReady: ${allReady}, activePlayers: ${room.activePlayers.length}`);
+
+      if (allReady) {
+        console.log(`[DEBUG] All players ready after new join - starting game`);
+        startNewRound(room, roomID, io);
+      }
+    }
+
+  } catch (error) {
+    console.error(`[ERROR] Exception in joinExistingRoom for ${socket.id}:`, error);
+    socket.emit("err", {
+      message: "Lỗi tham gia phòng",
+      code: "JOIN_ERROR",
+      roomID
     });
   }
-
-  emitRoomStatus(io, roomID);
 };
 
 const getPlayerPosition = (room, socketId) => {
   if (room.activePlayers.includes(socketId)) return 'active';
   if (room.waitingQueue.includes(socketId)) return 'queue';
   return 'unknown';
+};
+
+// Reorganize player slots to fill gaps (move player2 to slot1 if slot1 is empty)
+const reorganizePlayerSlots = (room, roomID, io) => {
+  // If slot[0] is empty but slot[1] has a player, move player from slot[1] to slot[0]
+  if (room.playerSlots[0] === null && room.playerSlots[1] !== null) {
+    const player2Id = room.playerSlots[1];
+    const playerData = room.players.get(player2Id);
+
+    if (playerData) {
+      console.log(`[DEBUG] Reorganizing: Moving player ${player2Id} from slot[1] to slot[0]`);
+      // Move player from slot[1] to slot[0]
+      room.playerSlots[0] = player2Id;
+      room.playerSlots[1] = null;
+      playerData.playerNumber = 1;
+
+      // Notify the reorganized player of their new position
+      io.to(player2Id).emit("playerJoined", {
+        roomID,
+        position: 'active',
+        playerNumber: 1
+      });
+
+      // Emit room status to sync all clients
+      emitRoomStatus(io, roomID);
+
+      return true; // Indicates reorganization occurred
+    }
+  }
+  return false; // No reorganization needed
 };
 
 // Enhanced exit room
@@ -230,6 +410,11 @@ const exitRoom = (socket, roomID, io) => {
   try {
     const playerData = room.players.get(socket.id);
     if (!playerData) return;
+
+    // Clear player slot based on playerNumber
+    if (playerData && playerData.playerNumber) {
+      room.playerSlots[playerData.playerNumber - 1] = null;
+    }
 
     // Remove from all collections
     room.players.delete(socket.id);
@@ -256,10 +441,27 @@ const exitRoom = (socket, roomID, io) => {
       });
     }
 
-    // Try to fill empty active player slots
-    fillActivePlayerSlots(room, rid, io);
+    // Reorganize player slots - move remaining players to fill gaps
+    const wasReorganized = reorganizePlayerSlots(room, rid, io);
 
-    // Emit updated status
+    // Chỉ reserve khi có lý do (có người chờ hoặc game đang chơi)
+    const shouldReserve = room.waitingQueue.length > 0 || room.gameState.inProgress;
+
+    if (room.activePlayers.length < room.settings.maxPlayers && shouldReserve) {
+      const reservedUntil = Date.now() + 10000; // 10 giây grace period
+      const timeoutId = setTimeout(() => {
+        room.reservedSlots.delete(socket.id);
+        fillActivePlayerSlots(room, rid, io); // Sau timeout, fill slot
+        emitRoomStatus(io, rid);
+        io.emit("room-list", getActiveRooms());
+      }, 10000);
+      room.reservedSlots.set(socket.id, { timeoutId, reservedUntil });
+    } else if (room.activePlayers.length < room.settings.maxPlayers) {
+      // Không reserve, fill slot ngay lập tức
+      fillActivePlayerSlots(room, rid, io);
+    }
+
+    // Emit updated status (always emit after reorganization or any changes)
     emitRoomStatus(io, rid);
     emitToRoom(io, rid, "playerLeft", {
       socketId: socket.id,
@@ -268,6 +470,9 @@ const exitRoom = (socket, roomID, io) => {
 
     // Clean up empty rooms
     if (isRoomEmpty(room)) {
+      // Clear any reserved timeouts
+      room.reservedSlots.forEach(({ timeoutId }) => clearTimeout(timeoutId));
+      room.reservedSlots.clear();
       // clear any pending timer
       if (room.playAgainTimer) {
         clearTimeout(room.playAgainTimer);
@@ -286,27 +491,59 @@ const exitRoom = (socket, roomID, io) => {
 };
 
 const fillActivePlayerSlots = (room, roomID, io) => {
-  // Fill active player slots from queue
+  let promoted = false;
+
+  // Fill active player slots from queue - prioritize empty slots
   while (room.activePlayers.length < room.settings.maxPlayers && room.waitingQueue.length > 0) {
     const nextPlayerId = room.waitingQueue.shift();
 
     if (room.players.has(nextPlayerId)) {
+      // Find available player slot
+      let playerNumber = 1;
+      if (room.playerSlots[0] === null) {
+        playerNumber = 1;
+        room.playerSlots[0] = nextPlayerId;
+      } else if (room.playerSlots[1] === null) {
+        playerNumber = 2;
+        room.playerSlots[1] = nextPlayerId;
+      }
+
       room.activePlayers.push(nextPlayerId);
       const playerData = room.players.get(nextPlayerId);
-      playerData.readyStatus = false;
+      // DON'T reset ready status when promoting from queue - preserve user's ready state
+      playerData.playerNumber = playerNumber;
 
       io.to(nextPlayerId).emit("promotedToActive", {
         roomID,
-        playerNumber: room.activePlayers.length
+        playerNumber: playerNumber
       });
+
+      promoted = true;
     }
   }
 
-  // Check if game can start
-  if (room.activePlayers.length === room.settings.maxPlayers && !room.gameState.inProgress) {
-    emitToActivePlayers(io, room, roomID, "gameReady", {
-      players: room.activePlayers
+  // CRITICAL: Always emit room status after any promotion to sync all clients
+  if (promoted) {
+    emitRoomStatus(io, roomID);
+
+    // Check if all active players are ready after promotion
+    const allReady = room.activePlayers.every(playerId => {
+      const pData = room.players.get(playerId);
+      return pData && pData.readyStatus;
     });
+
+    console.log(`[DEBUG] After promotion - allReady: ${allReady}, activePlayers: ${room.activePlayers.length}`);
+
+    // If all are ready and room is full, start game immediately
+    if (allReady && room.activePlayers.length >= 2 && !room.gameState.inProgress) {
+      console.log(`[DEBUG] All players ready after promotion - starting game`);
+      startNewRound(room, roomID, io);
+    } else if (room.activePlayers.length === room.settings.maxPlayers && !room.gameState.inProgress) {
+      // If room is full but not all ready, emit gameReady
+      emitToActivePlayers(io, room, roomID, "gameReady", {
+        players: room.activePlayers
+      });
+    }
   }
 };
 
@@ -317,6 +554,11 @@ const cleanupRoomsOnDisconnect = (socketID, io) => {
       if (!room.players.has(socketID)) continue;
 
       const playerData = room.players.get(socketID);
+
+      // Clear player slot based on playerNumber
+      if (playerData && playerData.playerNumber) {
+        room.playerSlots[playerData.playerNumber - 1] = null;
+      }
 
       // Remove from all collections
       room.players.delete(socketID);
@@ -340,8 +582,27 @@ const cleanupRoomsOnDisconnect = (socketID, io) => {
         });
       }
 
+      // Reorganize player slots after disconnect
+      const wasReorganized = reorganizePlayerSlots(room, roomID, io);
+
+      // Chỉ reserve disconnect nếu có lý do
+      const shouldReserve = room.waitingQueue.length > 0 || room.gameState.inProgress;
+
+      if (room.activePlayers.length < room.settings.maxPlayers && shouldReserve) {
+        const reservedUntil = Date.now() + 10000;
+        const timeoutId = setTimeout(() => {
+          room.reservedSlots.delete(socketID);
+          fillActivePlayerSlots(room, roomID, io);
+          emitRoomStatus(io, roomID);
+          io.emit("room-list", getActiveRooms());
+        }, 10000);
+        room.reservedSlots.set(socketID, { timeoutId, reservedUntil });
+      } else if (room.activePlayers.length < room.settings.maxPlayers) {
+        // Không reserve, fill slot ngay
+        fillActivePlayerSlots(room, roomID, io);
+      }
+
       // Try to fill slots and notify room
-      fillActivePlayerSlots(room, roomID, io);
       emitRoomStatus(io, roomID);
       emitToRoom(io, roomID, "playerDisconnected", {
         socketId: socketID
@@ -349,6 +610,8 @@ const cleanupRoomsOnDisconnect = (socketID, io) => {
 
       // Clean up empty room
       if (isRoomEmpty(room)) {
+        room.reservedSlots.forEach(({ timeoutId }) => clearTimeout(timeoutId));
+        room.reservedSlots.clear();
         if (room.playAgainTimer) {
           clearTimeout(room.playAgainTimer);
           room.playAgainTimer = null;
@@ -391,20 +654,33 @@ const playerReady = (socket, roomID, io) => {
   }
 
   // Toggle ready status
+  const wasReady = playerData.readyStatus;
   playerData.readyStatus = !playerData.readyStatus;
   updateLastActivity(rid);
 
+  console.log(`[DEBUG] Player ${socket.id} toggled ready from ${wasReady} to ${playerData.readyStatus}`);
+
   // Check if all active players are ready
+  const readyStates = room.activePlayers.map(playerId => {
+    const pData = room.players.get(playerId);
+    return { playerId: playerId.substr(-4), ready: pData ? pData.readyStatus : false };
+  });
+
   const allReady = room.activePlayers.every(playerId => {
     const pData = room.players.get(playerId);
     return pData && pData.readyStatus;
   });
 
+  console.log(`[DEBUG] Ready states:`, readyStates);
+  console.log(`[DEBUG] All ready: ${allReady}, Active players: ${room.activePlayers.length}`);
+
   emitRoomStatus(io, rid);
 
   if (allReady && room.activePlayers.length >= 2) {
-    // Start new game
+    console.log(`[DEBUG] 🚀 Starting new round - all players ready!`);
     startNewRound(room, rid, io);
+  } else {
+    console.log(`[DEBUG] ⏳ Waiting for more players or readiness...`);
   }
 };
 
@@ -429,18 +705,23 @@ const startNewRound = (room, roomID, io) => {
   room.gameState.round++;
   room.gameState.choices.clear();
 
-  emitToRoom(io, roomID, 'gameStarted', {
-    round: room.gameState.round,
-    players: room.activePlayers
-  });
+  // CRITICAL FIX: Emit room status FIRST before gameStarted to sync state
+  emitRoomStatus(io, roomID);
 
+  // Small delay to ensure room status is processed first
+  setTimeout(() => {
+    emitToRoom(io, roomID, 'gameStarted', {
+      round: room.gameState.round,
+      players: room.activePlayers
+    });
 
-  emitToRoom(io, roomID, 'playAgain', {
-    round: room.gameState.round,
-    players: room.activePlayers,
-    firstPlayerChoice: null,
-    secondPlayerChoice: null
-  });
+    emitToRoom(io, roomID, 'playAgain', {
+      round: room.gameState.round,
+      players: room.activePlayers,
+      firstPlayerChoice: null,
+      secondPlayerChoice: null
+    });
+  }, 10); // Very small delay to ensure proper event order
 };
 
 // Enhanced choice handling
@@ -735,7 +1016,8 @@ const getActiveRooms = () => {
         maxPlayers: room.settings.maxPlayers,
         queueLength: room.waitingQueue.length,
         gameInProgress: room.gameState.inProgress,
-        round: room.gameState.round
+        round: room.gameState.round,
+        reserved: room.reservedSlots.size > 0 // Thêm để client hiển thị
       });
     }
   }
